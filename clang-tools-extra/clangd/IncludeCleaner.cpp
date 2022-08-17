@@ -12,10 +12,12 @@
 #include "ParsedAST.h"
 #include "Protocol.h"
 #include "SourceCode.h"
+#include "include-cleaner/Analysis.h"
 #include "index/CanonicalIncludes.h"
 #include "support/Logger.h"
 #include "support/Trace.h"
 #include "clang/AST/ASTContext.h"
+#include "clang/AST/Decl.h"
 #include "clang/AST/ExprCXX.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Basic/SourceLocation.h"
@@ -42,116 +44,19 @@ namespace {
 
 /// Crawler traverses the AST and feeds in the locations of (sometimes
 /// implicitly) used symbols into \p Result.
-class ReferencedLocationCrawler
-    : public RecursiveASTVisitor<ReferencedLocationCrawler> {
+class ReferencedLocationCrawler {
 public:
   ReferencedLocationCrawler(ReferencedLocations &Result,
                             const SourceManager &SM)
       : Result(Result), SM(SM) {}
 
-  bool VisitDeclRefExpr(DeclRefExpr *DRE) {
-    add(DRE->getDecl());
-    add(DRE->getFoundDecl());
-    return true;
-  }
-
-  bool VisitMemberExpr(MemberExpr *ME) {
-    add(ME->getMemberDecl());
-    add(ME->getFoundDecl().getDecl());
-    return true;
-  }
-
-  bool VisitTagType(TagType *TT) {
-    add(TT->getDecl());
-    return true;
-  }
-
-  bool VisitFunctionDecl(FunctionDecl *FD) {
-    // Function definition will require redeclarations to be included.
-    if (FD->isThisDeclarationADefinition())
-      add(FD);
-    return true;
-  }
-
-  bool VisitCXXConstructExpr(CXXConstructExpr *CCE) {
-    add(CCE->getConstructor());
-    return true;
-  }
-
-  bool VisitTemplateSpecializationType(TemplateSpecializationType *TST) {
-    // Using templateName case is handled by the override TraverseTemplateName.
-    if (TST->getTemplateName().getKind() == TemplateName::UsingTemplate)
-      return true;
-    add(TST->getAsCXXRecordDecl());                  // Specialization
-    return true;
-  }
-
-  // There is no VisitTemplateName in RAV, thus we override the Traverse version
-  // to handle the Using TemplateName case.
-  bool TraverseTemplateName(TemplateName TN) {
-    VisitTemplateName(TN);
-    return Base::TraverseTemplateName(TN);
-  }
-  // A pseudo VisitTemplateName, dispatched by the above TraverseTemplateName!
-  bool VisitTemplateName(TemplateName TN) {
-    if (const auto *USD = TN.getAsUsingShadowDecl()) {
-      add(USD);
-      return true;
-    }
-    add(TN.getAsTemplateDecl()); // Primary template.
-    return true;
-  }
-
-  bool VisitUsingType(UsingType *UT) {
-    add(UT->getFoundDecl());
-    return true;
-  }
-
-  bool VisitTypedefType(TypedefType *TT) {
-    add(TT->getDecl());
-    return true;
-  }
-
-  // Consider types of any subexpression used, even if the type is not named.
-  // This is helpful in getFoo().bar(), where Foo must be complete.
-  // FIXME(kirillbobyrev): Should we tweak this? It may not be desirable to
-  // consider types "used" when they are not directly spelled in code.
-  bool VisitExpr(Expr *E) {
-    TraverseType(E->getType());
-    return true;
-  }
-
-  bool TraverseType(QualType T) {
-    if (isNew(T.getTypePtrOrNull())) // don't care about quals
-      Base::TraverseType(T);
-    return true;
-  }
-
-  bool VisitUsingDecl(UsingDecl *D) {
-    for (const auto *Shadow : D->shadows())
-      add(Shadow->getTargetDecl());
-    return true;
-  }
-
-  // Enums may be usefully forward-declared as *complete* types by specifying
-  // an underlying type. In this case, the definition should see the declaration
-  // so they can be checked for compatibility.
-  bool VisitEnumDecl(EnumDecl *D) {
-    if (D->isThisDeclarationADefinition() && D->getIntegerTypeSourceInfo())
-      add(D);
-    return true;
-  }
-
-  // When the overload is not resolved yet, mark all candidates as used.
-  bool VisitOverloadExpr(OverloadExpr *E) {
-    for (const auto *ResolutionDecl : E->decls())
-      add(ResolutionDecl);
-    return true;
+  void TraverseAST(ASTContext &Ctx) {
+    include_cleaner::walkAST(
+        *Ctx.getTranslationUnitDecl(),
+        [this](SourceLocation, NamedDecl &ND) { add(&ND); });
   }
 
 private:
-  using Base = RecursiveASTVisitor<ReferencedLocationCrawler>;
-
   void add(const Decl *D) {
     if (!D || !isNew(D->getCanonicalDecl()))
       return;

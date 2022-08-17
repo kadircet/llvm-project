@@ -2,6 +2,8 @@
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 include_directories(${CMAKE_CURRENT_BINARY_DIR})
 
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../include-cleaner/include)
+
 add_subdirectory(support)
 
 # Configure the Features.inc file.
@@ -153,6 +155,7 @@ clang_target_link_libraries(clangDaemon
   clangDriver
   clangFormat
   clangFrontend
+  clangIncludeCleaner
   clangIndex
   clangLex
   clangSema
