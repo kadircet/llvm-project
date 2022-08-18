@@ -23,6 +23,7 @@
 #include "clang/Basic/SourceLocation.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Lex/HeaderSearch.h"
+#include "clang/Lex/MacroInfo.h"
 #include "clang/Lex/Preprocessor.h"
 #include "clang/Tooling/Syntax/Tokens.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -149,15 +150,12 @@ void findReferencedMacros(const SourceManager &SM, Preprocessor &PP,
   // this mechanism (as opposed to iterating through all tokens) will improve
   // the performance of findReferencedMacros and also improve other features
   // relying on MainFileMacros.
-  for (const syntax::Token &Tok : Tokens->spelledTokens(SM.getMainFileID())) {
-    auto Macro = locateMacroAt(Tok, PP);
-    if (!Macro)
-      continue;
-    auto Loc = Macro->Info->getDefinitionLoc();
-    if (Loc.isValid())
-      Result.User.insert(Loc);
-    // FIXME: support stdlib macros
-  }
+  include_cleaner::walkMacros(SM.getMainFileID(), PP,
+                              [&Result](SourceLocation, MacroInfo *MI) {
+                                auto Loc = MI->getDefinitionLoc();
+                                if (Loc.isValid())
+                                  Result.User.insert(Loc);
+                              });
 }
 
 static bool mayConsiderUnused(const Inclusion &Inc, ParsedAST &AST,
