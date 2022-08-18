@@ -1,4 +1,5 @@
 #include "AnalysisInternal.h"
+#include "TestUtils.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/Basic/FileManager.h"
 #include "clang/Frontend/TextDiagnostic.h"
@@ -53,29 +54,11 @@ void testWalk(llvm::StringRef TargetCode, llvm::StringRef ReferencingCode) {
   }
   llvm::sort(ReferencedOffsets);
 
-  // Compare results to the expected points.
-  // For each difference, show the target point in context, like a diagnostic.
-  std::string DiagBuf;
-  llvm::raw_string_ostream DiagOS(DiagBuf);
-  auto *DiagOpts = new DiagnosticOptions();
-  DiagOpts->ShowLevel = 0;
-  DiagOpts->ShowNoteIncludeStack = 0;
-  TextDiagnostic Diag(DiagOS, AST.context().getLangOpts(), DiagOpts);
-  auto DiagnosePoint = [&](const char *Message, unsigned Offset) {
-    Diag.emitDiagnostic(
-        FullSourceLoc(SM.getComposedLoc(TargetFile, Offset), SM),
-        DiagnosticsEngine::Note, Message, {}, {});
-  };
-  for (auto Expected : Target.points())
-    if (!llvm::is_contained(ReferencedOffsets, Expected))
-      DiagnosePoint("location not marked used", Expected);
-  for (auto Actual : ReferencedOffsets)
-    if (!llvm::is_contained(Target.points(), Actual))
-      DiagnosePoint("location unexpectedly used", Actual);
-
+  auto Diags =
+      diagnosePoints(AST, TargetFile, Target.points(), ReferencedOffsets);
   // If there were any differences, we print the entire referencing code once.
-  if (!DiagBuf.empty())
-    ADD_FAILURE() << DiagBuf << "\nfrom code:\n" << ReferencingCode;
+  if (!Diags.empty())
+    ADD_FAILURE() << Diags << "\nfrom code:\n" << ReferencingCode;
 }
 
 TEST(WalkAST, DeclRef) {

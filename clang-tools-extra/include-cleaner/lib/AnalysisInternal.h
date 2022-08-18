@@ -27,6 +27,8 @@
 namespace clang {
 class Decl;
 class NamedDecl;
+class Preprocessor;
+class MacroInfo;
 namespace include_cleaner {
 
 /// Traverses part of the AST from \p Root, finding uses of symbols.
@@ -41,6 +43,9 @@ namespace include_cleaner {
 /// being analyzed, in order to find all references within it.
 void walkAST(Decl &Root, llvm::function_ref<void(SourceLocation, NamedDecl &)>);
 
+/// Traverses spelled tokens in a given file and collects macro uses.
+void walkMacros(FileID FID, Preprocessor &PP,
+                llvm::function_ref<void(SourceLocation, MacroInfo *MI)>);
 } // namespace include_cleaner
 } // namespace clang
 
