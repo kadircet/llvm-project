@@ -58,31 +58,7 @@ public:
   }
 
 private:
-  void add(const Decl *D) {
-    if (!D || !isNew(D->getCanonicalDecl()))
-      return;
-    if (auto SS = StdRecognizer(D)) {
-      Result.Stdlib.insert(*SS);
-      return;
-    }
-    // Special case RecordDecls, as it is common for them to be forward
-    // declared multiple times. The most common cases are:
-    // - Definition available in TU, only mark that one as usage. The rest is
-    //   likely to be unnecessary. This might result in false positives when an
-    //   internal definition is visible.
-    // - There's a forward declaration in the main file, no need for other
-    //   redecls.
-    if (const auto *RD = llvm::dyn_cast<RecordDecl>(D)) {
-      if (const auto *Definition = RD->getDefinition()) {
-        Result.User.insert(Definition->getLocation());
-        return;
-      }
-      if (SM.isInMainFile(RD->getMostRecentDecl()->getLocation()))
-        return;
-    }
-    for (const Decl *Redecl : D->redecls())
-      Result.User.insert(Redecl->getLocation());
-  }
+  void add(const Decl *D) {}
 
   bool isNew(const void *P) { return P && Visited.insert(P).second; }
 
@@ -232,10 +208,8 @@ ReferencedLocations findReferencedLocations(ASTContext &Ctx, Preprocessor &PP,
   trace::Span Tracer("IncludeCleaner::findReferencedLocations");
   ReferencedLocations Result;
   const auto &SM = Ctx.getSourceManager();
-  ReferencedLocationCrawler Crawler(Result, SM);
-  Crawler.TraverseAST(Ctx);
-  if (Tokens)
-    findReferencedMacros(SM, PP, Tokens, Result);
+  include_cleaner::findReferencedLocations(
+      Ctx, PP, [&Result](SourceLocation Loc) { Result.User.insert(Loc); });
   return Result;
 }
 
