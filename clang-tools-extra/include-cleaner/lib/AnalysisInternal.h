@@ -46,6 +46,9 @@ void walkAST(Decl &Root, llvm::function_ref<void(SourceLocation, NamedDecl &)>);
 /// Traverses spelled tokens in a given file and collects macro uses.
 void walkMacros(FileID FID, Preprocessor &PP,
                 llvm::function_ref<void(SourceLocation, MacroInfo *MI)>);
+
+void findReferencedLocations(Decl &Root,
+                             llvm::function_ref<void(SourceLocation)>);
 } // namespace include_cleaner
 } // namespace clang
 
