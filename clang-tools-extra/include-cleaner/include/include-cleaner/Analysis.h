@@ -9,8 +9,8 @@ class ASTContext;
 class Preprocessor;
 namespace include_cleaner {
 
-void findReferencedLocations(ASTContext &Ctx, Preprocessor &PP,
-                             llvm::function_ref<void(SourceLocation)> CB);
+void walkUsed(ASTContext &Ctx, Preprocessor &PP,
+              llvm::function_ref<void(SourceLocation)> CB);
 } // namespace include_cleaner
 } // namespace clang
 #endif

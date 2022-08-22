@@ -2,8 +2,8 @@
 #include "TestUtils.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/Basic/FileManager.h"
-#include "clang/Frontend/TextDiagnostic.h"
 #include "clang/Testing/TestAST.h"
+#include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Testing/Support/Annotations.h"
 #include "gtest/gtest.h"
@@ -11,6 +11,16 @@
 namespace clang {
 namespace include_cleaner {
 namespace {
+
+TestAST getAST(llvm::StringRef MainFile, llvm::StringRef Header,
+               llvm::StringRef HeaderName = "target.h") {
+  TestInputs Inputs(MainFile);
+  Inputs.ExtraFiles["target.h"] = Header;
+  Inputs.ExtraArgs.push_back("-include");
+  Inputs.ExtraArgs.push_back("target.h");
+  Inputs.ExtraArgs.push_back("-std=c++17");
+  return TestAST(Inputs);
+}
 
 // Specifies a test of which symbols are referenced by a piece of code.
 //
@@ -22,12 +32,7 @@ void testWalk(llvm::StringRef TargetCode, llvm::StringRef ReferencingCode) {
   llvm::Annotations Target(TargetCode);
   llvm::Annotations Referencing(ReferencingCode);
 
-  TestInputs Inputs(Referencing.code());
-  Inputs.ExtraFiles["target.h"] = Target.code().str();
-  Inputs.ExtraArgs.push_back("-include");
-  Inputs.ExtraArgs.push_back("target.h");
-  Inputs.ExtraArgs.push_back("-std=c++17");
-  TestAST AST(Inputs);
+  auto AST = getAST(Referencing.code(), Target.code());
   const auto &SM = AST.sourceManager();
 
   // We're only going to record references from the nominated point,
@@ -144,6 +149,61 @@ TEST(WalkAST, Enums) {
   testWalk("enum E { ^A = 42, B = 43 };", "int e = ^A;");
   testWalk("enum class ^E : int;", "enum class ^E : int {};");
   testWalk("enum class E : int {};", "enum class ^E : int ;");
+}
+
+void testLocate(llvm::StringRef TargetCode, llvm::StringRef ReferencingCode) {
+  llvm::Annotations Target(TargetCode);
+  llvm::Annotations Referencing(ReferencingCode);
+
+  auto AST = getAST(Referencing.code(), Target.code());
+  const auto &SM = AST.sourceManager();
+
+  // We're only going to record references from the nominated point,
+  // to the target file.
+  FileID ReferencingFile = SM.getMainFileID();
+  SourceLocation ReferencingLoc =
+      SM.getComposedLoc(ReferencingFile, Referencing.point());
+  FileID TargetFile = SM.translateFile(
+      llvm::cantFail(AST.fileManager().getFileRef("target.h")));
+
+  // Perform the walk, and capture the offsets of the referenced targets.
+  std::vector<size_t> ReferencedOffsets;
+  for (Decl *D : AST.context().getTranslationUnitDecl()->decls()) {
+    if (ReferencingFile != SM.getDecomposedExpansionLoc(D->getLocation()).first)
+      continue;
+    walkAST(*D, [&](SourceLocation Loc, NamedDecl &ND) {
+      if (SM.getFileLoc(Loc) != ReferencingLoc)
+        return;
+      for (auto *D : locateDecls(ND)) {
+        auto NDLoc = SM.getDecomposedLoc(SM.getFileLoc(D->getLocation()));
+        if (NDLoc.first != TargetFile)
+          return;
+        ReferencedOffsets.push_back(NDLoc.second);
+      }
+    });
+  }
+  llvm::sort(ReferencedOffsets);
+
+  auto Diags =
+      diagnosePoints(AST, TargetFile, Target.points(), ReferencedOffsets);
+  // If there were any differences, we print the entire referencing code once.
+  if (!Diags.empty())
+    ADD_FAILURE() << Diags << "\nfrom code:\n" << ReferencingCode;
+}
+
+TEST(LocateDecls, General) {
+  // Redecls
+  testLocate("namespace ns { void ^foo(); void ^foo() {} }", "using ns::^foo;");
+  // Constructor implies type?
+  testLocate("struct ^A { ^A(int); };", "A ^x(123);");
+  // Member implies type?
+  testLocate("struct ^S { void ^foo(); };", "void foo() { S{}.^foo(); }");
+  // Prefer definition.
+  testLocate("struct S; struct ^S {};", "^S s;");
+  // All redecls.
+  testLocate("struct ^S; struct ^S;", "^S *s;");
+  // None when found in main file.
+  testLocate("struct S; struct S;", "struct S; ^S *s;");
 }
 
 } // namespace

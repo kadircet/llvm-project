@@ -25,10 +25,11 @@
 #include "llvm/ADT/STLFunctionalExtras.h"
 
 namespace clang {
+class ASTContext;
 class Decl;
+class MacroInfo;
 class NamedDecl;
 class Preprocessor;
-class MacroInfo;
 namespace include_cleaner {
 
 /// Traverses part of the AST from \p Root, finding uses of symbols.
@@ -47,8 +48,9 @@ void walkAST(Decl &Root, llvm::function_ref<void(SourceLocation, NamedDecl &)>);
 void walkMacros(FileID FID, Preprocessor &PP,
                 llvm::function_ref<void(SourceLocation, MacroInfo *MI)>);
 
-void findReferencedLocations(Decl &Root,
-                             llvm::function_ref<void(SourceLocation)>);
+void walkUsed(ASTContext &Ctx, Preprocessor &PP,
+              llvm::function_ref<void(SourceLocation)>);
+std::vector<const Decl *> locateDecls(NamedDecl &ND);
 } // namespace include_cleaner
 } // namespace clang
 

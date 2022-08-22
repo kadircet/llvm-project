@@ -17,16 +17,12 @@
 #include "support/Logger.h"
 #include "support/Trace.h"
 #include "clang/AST/ASTContext.h"
-#include "clang/AST/Decl.h"
-#include "clang/AST/ExprCXX.h"
-#include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Basic/SourceLocation.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Lex/HeaderSearch.h"
 #include "clang/Lex/MacroInfo.h"
 #include "clang/Lex/Preprocessor.h"
 #include "clang/Tooling/Syntax/Tokens.h"
-#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringSet.h"
@@ -42,31 +38,6 @@ static bool AnalyzeStdlib = false;
 void setIncludeCleanerAnalyzesStdlib(bool B) { AnalyzeStdlib = B; }
 
 namespace {
-
-/// Crawler traverses the AST and feeds in the locations of (sometimes
-/// implicitly) used symbols into \p Result.
-class ReferencedLocationCrawler {
-public:
-  ReferencedLocationCrawler(ReferencedLocations &Result,
-                            const SourceManager &SM)
-      : Result(Result), SM(SM) {}
-
-  void TraverseAST(ASTContext &Ctx) {
-    include_cleaner::walkAST(
-        *Ctx.getTranslationUnitDecl(),
-        [this](SourceLocation, NamedDecl &ND) { add(&ND); });
-  }
-
-private:
-  void add(const Decl *D) {}
-
-  bool isNew(const void *P) { return P && Visited.insert(P).second; }
-
-  ReferencedLocations &Result;
-  llvm::DenseSet<const void *> Visited;
-  const SourceManager &SM;
-  tooling::stdlib::Recognizer StdRecognizer;
-};
 
 // Given a set of referenced FileIDs, determines all the potentially-referenced
 // files and macros by traversing expansion/spelling locations of macro IDs.
@@ -109,29 +80,6 @@ clangd::Range getDiagnosticRange(llvm::StringRef Code, unsigned HashOffset) {
         return C == '\n' || C == '\r';
       }));
   return Result;
-}
-
-// Finds locations of macros referenced from within the main file. That includes
-// references that were not yet expanded, e.g `BAR` in `#define FOO BAR`.
-void findReferencedMacros(const SourceManager &SM, Preprocessor &PP,
-                          const syntax::TokenBuffer *Tokens,
-                          ReferencedLocations &Result) {
-  trace::Span Tracer("IncludeCleaner::findReferencedMacros");
-  // FIXME(kirillbobyrev): The macros from the main file are collected in
-  // ParsedAST's MainFileMacros. However, we can't use it here because it
-  // doesn't handle macro references that were not expanded, e.g. in macro
-  // definitions or preprocessor-disabled sections.
-  //
-  // Extending MainFileMacros to collect missing references and switching to
-  // this mechanism (as opposed to iterating through all tokens) will improve
-  // the performance of findReferencedMacros and also improve other features
-  // relying on MainFileMacros.
-  include_cleaner::walkMacros(SM.getMainFileID(), PP,
-                              [&Result](SourceLocation, MacroInfo *MI) {
-                                auto Loc = MI->getDefinitionLoc();
-                                if (Loc.isValid())
-                                  Result.User.insert(Loc);
-                              });
 }
 
 static bool mayConsiderUnused(const Inclusion &Inc, ParsedAST &AST,
@@ -202,21 +150,6 @@ FileID headerResponsible(FileID ID, const SourceManager &SM,
 }
 
 } // namespace
-
-ReferencedLocations findReferencedLocations(ASTContext &Ctx, Preprocessor &PP,
-                                            const syntax::TokenBuffer *Tokens) {
-  trace::Span Tracer("IncludeCleaner::findReferencedLocations");
-  ReferencedLocations Result;
-  const auto &SM = Ctx.getSourceManager();
-  include_cleaner::findReferencedLocations(
-      Ctx, PP, [&Result](SourceLocation Loc) { Result.User.insert(Loc); });
-  return Result;
-}
-
-ReferencedLocations findReferencedLocations(ParsedAST &AST) {
-  return findReferencedLocations(AST.getASTContext(), AST.getPreprocessor(),
-                                 &AST.getTokens());
-}
 
 ReferencedFiles findReferencedFiles(
     const ReferencedLocations &Locs, const SourceManager &SM,
@@ -392,5 +325,12 @@ std::vector<Diag> issueUnusedIncludesDiagnostics(ParsedAST &AST,
   return Result;
 }
 
+ReferencedLocations findReferencedLocations(ParsedAST &AST) {
+  ReferencedLocations Refs;
+  include_cleaner::walkUsed(
+      AST.getASTContext(), AST.getPreprocessor(),
+      [&Refs](SourceLocation Loc) { Refs.User.insert(Loc); });
+  return Refs;
+}
 } // namespace clangd
 } // namespace clang
