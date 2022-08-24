@@ -22,6 +22,7 @@
 #include "clang/Lex/HeaderSearch.h"
 #include "clang/Lex/MacroInfo.h"
 #include "clang/Lex/Preprocessor.h"
+#include "clang/Tooling/Inclusions/StandardLibrary.h"
 #include "clang/Tooling/Syntax/Tokens.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/SmallString.h"
@@ -30,6 +31,7 @@
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Regex.h"
 #include <functional>
+#include <variant>
 
 namespace clang {
 namespace clangd {
@@ -329,7 +331,12 @@ ReferencedLocations findReferencedLocations(ParsedAST &AST) {
   ReferencedLocations Refs;
   include_cleaner::walkUsed(
       AST.getASTContext(), AST.getPreprocessor(),
-      [&Refs](SourceLocation Loc) { Refs.User.insert(Loc); });
+      [&Refs](std::variant<SourceLocation, tooling::stdlib::Symbol> LocOrSym) {
+        if (auto *Loc = std::get_if<0>(&LocOrSym))
+          Refs.User.insert(*Loc);
+        else
+          Refs.Stdlib.insert(std::get<1>(LocOrSym));
+      });
   return Refs;
 }
 } // namespace clangd

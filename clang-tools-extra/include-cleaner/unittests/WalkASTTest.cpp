@@ -2,11 +2,15 @@
 #include "TestUtils.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/Basic/FileManager.h"
+#include "clang/Basic/SourceLocation.h"
 #include "clang/Testing/TestAST.h"
+#include "clang/Tooling/Inclusions/StandardLibrary.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Testing/Support/Annotations.h"
+#include "gmock/gmock.h"
 #include "gtest/gtest.h"
+#include <variant>
 
 namespace clang {
 namespace include_cleaner {
@@ -204,6 +208,39 @@ TEST(LocateDecls, General) {
   testLocate("struct ^S; struct ^S;", "^S *s;");
   // None when found in main file.
   testLocate("struct S; struct S;", "struct S; ^S *s;");
+}
+
+TEST(StdLib, General) {
+  // Smoke tests only for finding used symbols/headers.
+  llvm::StringLiteral BaseHeader = R"cpp(
+    namespace std { class error_code {}; }
+    class error_code {};
+    namespace nonstd { class error_code {}; }
+  )cpp";
+  struct {
+    llvm::StringRef Code;
+    std::vector<tooling::stdlib::Symbol> Symbols;
+  } Tests[] = {
+      {
+          "std::error_code x();",
+          {*tooling::stdlib::Symbol::named("std::", "error_code")},
+      },
+      {"error_code x;", {}},
+      {"nonstd::error_code x;", {}},
+  };
+
+  for (const auto &Test : Tests) {
+    auto AST = getAST(Test.Code, BaseHeader);
+    std::vector<tooling::stdlib::Symbol> Actual;
+    walkUsed(
+        AST.context(), AST.preprocessor(),
+        [&Actual](
+            std::variant<SourceLocation, tooling::stdlib::Symbol> LocOrStd) {
+          if (auto *Std = std::get_if<1>(&LocOrStd))
+            Actual.emplace_back(std::move(*Std));
+        });
+    EXPECT_THAT(Actual, testing::ElementsAreArray(Test.Symbols));
+  }
 }
 
 } // namespace

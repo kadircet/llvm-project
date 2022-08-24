@@ -14,8 +14,10 @@
 #include "clang/Basic/SourceLocation.h"
 #include "clang/Lex/MacroInfo.h"
 #include "clang/Lex/Preprocessor.h"
+#include "clang/Tooling/Inclusions/StandardLibrary.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/Support/Casting.h"
+#include <variant>
 #include <vector>
 
 namespace clang::include_cleaner {
@@ -50,10 +52,17 @@ std::vector<const Decl *> locateDecls(NamedDecl &ND) {
 }
 
 void walkUsed(ASTContext &Ctx, Preprocessor &PP,
-              llvm::function_ref<void(SourceLocation)> CB) {
+              llvm::function_ref<
+                  void(std::variant<SourceLocation, tooling::stdlib::Symbol>)>
+                  CB) {
   auto &SM = PP.getSourceManager();
+  tooling::stdlib::Recognizer Recognizer;
   walkAST(*Ctx.getTranslationUnitDecl(),
           [&](SourceLocation Loc, NamedDecl &ND) {
+            if (auto SS = Recognizer(&ND)) {
+              CB(*SS);
+              return;
+            }
             for (auto *D : locateDecls(ND))
               CB(D->getLocation());
           });

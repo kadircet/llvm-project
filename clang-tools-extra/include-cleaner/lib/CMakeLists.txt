@@ -8,6 +8,7 @@ add_clang_library(clangIncludeCleaner
   LINK_LIBS
   clangBasic
   clangAST
+  clangToolingInclusions
   clangToolingSyntax
   )
 

@@ -22,7 +22,9 @@
 #define CLANG_INCLUDE_CLEANER_ANALYSISINTERNAL_H
 
 #include "clang/Basic/SourceLocation.h"
+#include "clang/Tooling/Inclusions/StandardLibrary.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
+#include <variant>
 
 namespace clang {
 class ASTContext;
@@ -49,7 +51,8 @@ void walkMacros(FileID FID, Preprocessor &PP,
                 llvm::function_ref<void(SourceLocation, MacroInfo *MI)>);
 
 void walkUsed(ASTContext &Ctx, Preprocessor &PP,
-              llvm::function_ref<void(SourceLocation)>);
+              llvm::function_ref<
+                  void(std::variant<SourceLocation, tooling::stdlib::Symbol>)>);
 std::vector<const Decl *> locateDecls(NamedDecl &ND);
 } // namespace include_cleaner
 } // namespace clang
