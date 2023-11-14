@@ -17,6 +17,7 @@
 #include "clang/Basic/SourceLocation.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Basic/Specifiers.h"
+#include "clang/Basic/TokenKinds.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Lex/DirectoryLookup.h"
 #include "clang/Lex/MacroInfo.h"
@@ -27,19 +28,15 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
-#include "llvm/ADT/iterator_range.h"
 #include "llvm/Support/Allocator.h"
-#include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem/UniqueID.h"
 #include "llvm/Support/StringSaver.h"
 #include <algorithm>
 #include <assert.h>
 #include <memory>
 #include <optional>
-#include <set>
 #include <utility>
 #include <vector>
 
@@ -225,17 +222,20 @@ public:
       }
     if (!IncludedHeader && File)
       IncludedHeader = *File;
-    checkForExport(HashFID, HashLine, std::move(IncludedHeader), File);
+    checkForExport(HashFID, HashLine, std::move(IncludedHeader), File,
+                   IncludeTok);
     checkForKeep(HashLine, File);
   }
 
   void checkForExport(FileID IncludingFile, int HashLine,
                       std::optional<Header> IncludedHeader,
-                      OptionalFileEntryRef IncludedFile) {
-    auto AddExport = [&] {
+                      OptionalFileEntryRef IncludedFile,
+                      const Token &IncludeTok) {
+    // Adds an export for the IncludedFile from IncludingFile.
+    auto AddExport = [&]() {
       auto ExportingFileName = SM.getFileEntryForID(IncludingFile)->getName();
       if (IncludedFile) {
-        Out->IWYUExportBy[IncludedFile->getUniqueID()].push_back(
+        Out->IWYUExportBy[IncludedFile->getFileEntry().getUniqueID()].push_back(
             ExportingFileName);
       }
       if (IncludedHeader && IncludedHeader->kind() == Header::Standard) {
@@ -243,8 +243,13 @@ public:
             ExportingFileName);
       }
     };
-    if (ExportStack.empty())
+    if (ExportStack.empty()) {
+      if (IncludeTok.getIdentifierInfo()->getPPKeywordID() ==
+          tok::pp_include_next) {
+        AddExport();
+      }
       return;
+    }
     auto &Top = ExportStack.back();
     if (Top.SeenAtFile != IncludingFile)
       return;

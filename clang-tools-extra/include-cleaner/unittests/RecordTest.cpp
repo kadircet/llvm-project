@@ -558,5 +558,37 @@ TEST_F(PragmaIncludeTest, ExportInUnnamedBuffer) {
       PI.getExporters(llvm::cantFail(FM->getFileRef("foo.h")), *FM),
       testing::ElementsAre(llvm::cantFail(FM->getFileRef("exporter.h"))));
 }
+
+TEST_F(PragmaIncludeTest, ExportIncludeNext) {
+  llvm::StringLiteral Filename = "test.cpp";
+  auto Code = R"cpp(#include <new>)cpp";
+  Inputs.ExtraFiles["foo/new"] = R"cpp(
+  #pragma once
+  #include_next <new>
+  )cpp";
+  Inputs.ExtraFiles["inner/new"] = "#pragma once";
+
+  auto Clang = std::make_unique<CompilerInstance>(
+      std::make_shared<PCHContainerOperations>());
+  Clang->createDiagnostics();
+
+  Clang->setInvocation(std::make_unique<CompilerInvocation>());
+  ASSERT_TRUE(CompilerInvocation::CreateFromArgs(
+      Clang->getInvocation(), {"-Ifoo/", "-Iinner/", Filename.data()},
+      Clang->getDiagnostics(), "clang"));
+
+  // Create unnamed memory buffers for all the files.
+  auto VFS = llvm::makeIntrusiveRefCnt<llvm::vfs::InMemoryFileSystem>();
+  VFS->addFile(Filename, /*ModificationTime=*/0,
+               llvm::MemoryBuffer::getMemBufferCopy(Code, /*BufferName=*/""));
+  for (const auto &Extra : Inputs.ExtraFiles)
+    VFS->addFile(Extra.getKey(), /*ModificationTime=*/0,
+                 llvm::MemoryBuffer::getMemBufferCopy(Extra.getValue(),
+                                                      /*BufferName=*/""));
+  auto *FM = Clang->createFileManager(VFS);
+  ASSERT_TRUE(Clang->ExecuteAction(*Inputs.MakeAction()));
+  EXPECT_THAT(PI.getExporters(llvm::cantFail(FM->getFileRef("inner/new")), *FM),
+              testing::ElementsAre(llvm::cantFail(FM->getFileRef("foo/new"))));
+}
 } // namespace
 } // namespace clang::include_cleaner
