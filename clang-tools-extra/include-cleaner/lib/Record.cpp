@@ -232,6 +232,17 @@ public:
   void checkForExport(FileID IncludingFile, int HashLine,
                       std::optional<Header> IncludedHeader,
                       OptionalFileEntryRef IncludedFile) {
+    auto AddExport = [&] {
+      auto ExportingFileName = SM.getFileEntryForID(IncludingFile)->getName();
+      if (IncludedFile) {
+        Out->IWYUExportBy[IncludedFile->getUniqueID()].push_back(
+            ExportingFileName);
+      }
+      if (IncludedHeader && IncludedHeader->kind() == Header::Standard) {
+        Out->StdIWYUExportBy[IncludedHeader->standard()].push_back(
+            ExportingFileName);
+      }
+    };
     if (ExportStack.empty())
       return;
     auto &Top = ExportStack.back();
@@ -240,20 +251,7 @@ public:
     // Make sure current include is covered by the export pragma.
     if ((Top.Block && HashLine > Top.SeenAtLine) ||
         Top.SeenAtLine == HashLine) {
-      if (IncludedHeader) {
-        switch (IncludedHeader->kind()) {
-        case Header::Physical:
-          Out->IWYUExportBy[IncludedHeader->physical().getUniqueID()]
-              .push_back(Top.Path);
-          break;
-        case Header::Standard:
-          Out->StdIWYUExportBy[IncludedHeader->standard()].push_back(Top.Path);
-          break;
-        case Header::Verbatim:
-          assert(false && "unexpected Verbatim header");
-          break;
-        }
-      }
+      AddExport();
       // main-file #include with export pragma should never be removed.
       if (Top.SeenAtFile == SM.getMainFileID() && IncludedFile)
         Out->ShouldKeep.insert(IncludedFile->getUniqueID());
