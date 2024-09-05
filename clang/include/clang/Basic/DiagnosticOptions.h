@@ -11,6 +11,7 @@
 
 #include "clang/Basic/LLVM.h"
 #include "llvm/ADT/IntrusiveRefCntPtr.h"
+#include "llvm/ADT/StringMap.h"
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -111,6 +112,7 @@ public:
   /// The list of -W... options used to alter the diagnostic mappings, with the
   /// prefixes removed.
   std::vector<std::string> Warnings;
+  llvm::StringMap<std::string> WarningEnablement;
 
   /// The list of prefixes from -Wundef-prefix=... used to generate warnings
   /// for undefined macros.

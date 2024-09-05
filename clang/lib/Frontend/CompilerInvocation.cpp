@@ -53,6 +53,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/ADT/Twine.h"
@@ -932,7 +933,8 @@ bool CompilerInvocation::checkCC1RoundTrip(ArrayRef<const char *> Args,
 
 static void addDiagnosticArgs(ArgList &Args, OptSpecifier Group,
                               OptSpecifier GroupWithValue,
-                              std::vector<std::string> &Diagnostics) {
+                              std::vector<std::string> &Diagnostics,
+                              llvm::StringMap<std::string> *Enablements) {
   for (auto *A : Args.filtered(Group)) {
     if (A->getOption().getKind() == Option::FlagClass) {
       // The argument is a pure flag (such as OPT_Wall or OPT_Wdeprecated). Add
@@ -945,8 +947,20 @@ static void addDiagnosticArgs(ArgList &Args, OptSpecifier Group,
       Diagnostics.push_back(
           std::string(A->getOption().getName().drop_front(1).rtrim("=-")));
     } else {
+      llvm::StringRef Opt(A->getValue());
+      Opt.consume_front("no-");
+      if (Opt.starts_with("error") || Opt.starts_with("format") ||
+          Opt.starts_with("fatal-errors")) {
+        Diagnostics.push_back(A->getValue());
+        continue;
+      }
+      Opt = A->getValue();
       // Otherwise, add its value (for OPT_W_Joined and similar).
-      Diagnostics.push_back(A->getValue());
+      auto [Warn, Enablement] = Opt.rsplit('=');
+      if (Enablements && !Enablement.empty())
+        Enablements->try_emplace(Warn, Enablement.str());
+      else
+        Diagnostics.push_back(Opt.str());
     }
   }
 }
@@ -2484,6 +2498,16 @@ void CompilerInvocationBase::GenerateDiagnosticArgs(
     Consumer(StringRef("-W") + Warning);
   }
 
+  for (const auto &[Warning,Mapping] : Opts.WarningEnablement) {
+    // This option is automatically generated from UndefPrefixes.
+    if (Warning == "undef-prefix")
+      continue;
+    // This option is automatically generated from CheckConstexprFunctionBodies.
+    if (Warning == "invalid-constexpr" || Warning == "no-invalid-constexpr")
+      continue;
+    Consumer(StringRef("-W") + Warning + "=" + Mapping);
+  }
+
   for (const auto &Remark : Opts.Remarks) {
     // These arguments are generated from OptimizationRemark fields of
     // CodeGenOptions.
@@ -2571,8 +2595,10 @@ bool clang::ParseDiagnosticArgs(DiagnosticOptions &Opts, ArgList &Args,
     Opts.TabStop = DiagnosticOptions::DefaultTabStop;
   }
 
-  addDiagnosticArgs(Args, OPT_W_Group, OPT_W_value_Group, Opts.Warnings);
-  addDiagnosticArgs(Args, OPT_R_Group, OPT_R_value_Group, Opts.Remarks);
+  addDiagnosticArgs(Args, OPT_W_Group, OPT_W_value_Group, Opts.Warnings,
+                    &Opts.WarningEnablement);
+  addDiagnosticArgs(Args, OPT_R_Group, OPT_R_value_Group, Opts.Remarks,
+                    nullptr);
 
   return Diags->getNumErrors() == NumErrorsBefore;
 }

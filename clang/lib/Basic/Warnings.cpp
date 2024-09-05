@@ -23,7 +23,11 @@
 // simpler because a remark can't be promoted to an error.
 #include "clang/Basic/AllDiagnostics.h"
 #include "clang/Basic/Diagnostic.h"
+#include "clang/Basic/DiagnosticIDs.h"
 #include "clang/Basic/DiagnosticOptions.h"
+#include "llvm/ADT/StringRef.h"
+#include "llvm/Support/Signals.h"
+#include "llvm/Support/raw_ostream.h"
 #include <algorithm>
 #include <cstring>
 #include <utility>
@@ -108,6 +112,7 @@ void clang::ProcessWarningOptions(DiagnosticsEngine &Diags,
       if (Opt == "system-headers") {
         if (SetDiagnostic)
           Diags.setSuppressSystemWarnings(!isPositive);
+        // TODO: Warn about ignored enablement mapping, if any.
         continue;
       }
 
@@ -122,6 +127,7 @@ void clang::ProcessWarningOptions(DiagnosticsEngine &Diags,
             Diags.setSeverityForAll(Flavor, diag::Severity::Ignored);
           }
         }
+        // TODO: Warn about ignored enablement mapping, if any.
         continue;
       }
 
@@ -193,6 +199,25 @@ void clang::ProcessWarningOptions(DiagnosticsEngine &Diags,
         Diags.setSeverityForGroup(Flavor, Opt, Mapping);
       }
     }
+
+    for (const auto &Entry : Opts.WarningEnablement) {
+      // TODO: support Werror Wno etc.
+      _Diags.clear();
+      llvm::StringRef Warn = Entry.first();
+      if (DiagIDs->getDiagnosticsInGroup(diag::Flavor::WarningOrError, Warn,
+                                         _Diags)) {
+        if (Report) {
+          EmitUnknownDiagWarning(Diags, diag::Flavor::WarningOrError, "-W",
+                                 Warn);
+        }
+        continue;
+      }
+      // TODO: What about diags covered by multiple groups? Currently last one
+      // takes precedence.
+      for (auto D : _Diags)
+        Diags.setEnablementMap(D, Entry.second);
+    }
+
 
     for (StringRef Opt : Opts.Remarks) {
       const auto Flavor = diag::Flavor::Remark;

@@ -13,10 +13,14 @@
 #include "clang/Basic/DiagnosticIDs.h"
 #include "clang/Basic/AllDiagnostics.h"
 #include "clang/Basic/DiagnosticCategories.h"
+#include "clang/Basic/SourceLocation.h"
 #include "clang/Basic/SourceManager.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/Error.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/GlobPattern.h"
+#include "llvm/Support/LineIterator.h"
 #include <map>
 #include <optional>
 using namespace clang;
@@ -490,6 +494,23 @@ DiagnosticIDs::getDiagnosticLevel(unsigned DiagID, SourceLocation Loc,
   return toLevel(getDiagnosticSeverity(DiagID, Loc, Diag));
 }
 
+static bool MatchesGlobs(SourceLocation Loc, const SourceManager &SM,
+                         llvm::StringRef GlobFile) {
+  // TODO: cache it in Diags-engine
+  auto &FM = SM.getFileManager();
+  auto Fname = SM.getFilename(SM.getSpellingLoc(Loc));
+  // TODO: verify mapping files exists when parsing args?
+  if (auto Buf = FM.getBufferForFile(GlobFile)) {
+    for (llvm::line_iterator It(**Buf); !It.is_at_eof(); ++It) {
+      // TODO: verify globs in advance?
+      if (llvm::cantFail(llvm::GlobPattern::create(*It)).match(Fname))
+        // TODO: Handle negatives etc.
+        return true;
+    }
+  }
+  return false;
+}
+
 /// Based on the way the client configured the Diagnostic
 /// object, classify the specified diagnostic ID into a Level, consumable by
 /// the DiagnosticClient.
@@ -509,6 +530,18 @@ DiagnosticIDs::getDiagnosticSeverity(unsigned DiagID, SourceLocation Loc,
   // Get the mapping information, or compute it lazily.
   DiagnosticsEngine::DiagState *State = Diag.GetDiagStateForLoc(Loc);
   DiagnosticMapping Mapping = State->getOrAddMapping((diag::kind)DiagID);
+
+  // If this warning wasn't mapped explicitly with annotations in code, enforce
+  // enablement map, if any.
+  if (!Mapping.isPragma() && Diag.SourceMgr) {
+    auto It = Diag.EnablementMap.find(DiagID);
+    if (It != Diag.EnablementMap.end() &&
+        MatchesGlobs(Loc, Diag.getSourceManager(), It->second)) {
+      // TODO: Propagate Werror/Wfatal-errors/Wno prefixes.
+      Mapping = DiagnosticMapping::Make(diag::Severity::Warning,
+                                        /*IsUser=*/true, /*IsPragma=*/false);
+    }
+  }
 
   // TODO: Can a null severity really get here?
   if (Mapping.getSeverity() != diag::Severity())

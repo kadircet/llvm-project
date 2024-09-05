@@ -562,6 +562,11 @@ bool DiagnosticsEngine::EmitCurrentDiagnostic(bool Force) {
   return Emitted;
 }
 
+void DiagnosticsEngine::setEnablementMap(diag::kind D,
+                                         llvm::StringRef Mapping) {
+  EnablementMap[D] = Mapping;
+}
+
 DiagnosticConsumer::~DiagnosticConsumer() = default;
 
 void DiagnosticConsumer::HandleDiagnostic(DiagnosticsEngine::Level DiagLevel,

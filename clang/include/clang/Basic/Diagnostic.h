@@ -295,6 +295,9 @@ private:
   DiagnosticConsumer *Client = nullptr;
   std::unique_ptr<DiagnosticConsumer> Owner;
   SourceManager *SourceMgr = nullptr;
+  // DiagID to file path containing enablement file. Must be destroyed before
+  // DiagOpts.
+  llvm::DenseMap<unsigned, llvm::StringRef> EnablementMap;
 
   /// Mapping information for diagnostics.
   ///
@@ -987,6 +990,8 @@ public:
 
   /// Return the value associated with this diagnostic flag.
   StringRef getFlagValue() const { return FlagValue; }
+
+  void setEnablementMap(diag::kind D, llvm::StringRef MappingFile);
 
 private:
   // This is private state used by DiagnosticBuilder.  We put it here instead of
