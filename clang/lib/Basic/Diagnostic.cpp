@@ -29,9 +29,13 @@
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/Support/ConvertUTF.h"
 #include "llvm/Support/CrashRecoveryContext.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/FormatAdapters.h"
+#include "llvm/Support/FormatVariadic.h"
+#include "llvm/Support/GlobPattern.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/SpecialCaseList.h"
 #include "llvm/Support/Unicode.h"
@@ -489,61 +493,79 @@ void DiagnosticsEngine::setSeverityForAll(diag::Flavor Flavor,
 namespace {
 // FIXME: We should isolate the parser from SpecialCaseList and just use it
 // here.
-class WarningsSpecialCaseList : public llvm::SpecialCaseList {
+class WarningsSpecialCaseList {
 public:
-  static std::unique_ptr<WarningsSpecialCaseList>
-  create(const llvm::MemoryBuffer &Input, std::string &Err);
-
   // Section names refer to diagnostic groups, which cover multiple individual
   // diagnostics. Expand diagnostic groups here to individual diagnostics.
   // A diagnostic can have multiple diagnostic groups associated with it, we let
   // the last section take precedence in such cases.
-  void processSections(DiagnosticsEngine &Diags);
+  static llvm::Expected<WarningsSpecialCaseList>
+  create(const llvm::MemoryBuffer &Input, DiagnosticsEngine &Diags);
 
   bool isDiagSuppressed(diag::kind DiagId, StringRef FilePath) const;
 
 private:
-  // Find the longest glob pattern that matches FilePath amongst
-  // CategoriesToMatchers, return true iff the match exists and belongs to a
-  // positive category.
-  bool globsMatches(const llvm::StringMap<Matcher> &CategoriesToMatchers,
-                    StringRef FilePath) const;
-
-  llvm::DenseMap<diag::kind, const Section *> DiagToSection;
+  std::unique_ptr<llvm::ParsedSpecialCaseList> ParsedInput;
+  struct Matcher {
+    StringRef DiagGroup;
+    std::vector<std::pair<const llvm::ParsedSpecialCaseList::Section::Entry *,
+                          llvm::GlobPattern>>
+        Patterns;
+    // Find the longest glob pattern that matches FilePath amongst
+    // CategoriesToMatchers, return true iff the match exists and belongs to a
+    // positive category.
+    bool matches(StringRef FilePath) const;
+  };
+  std::vector<Matcher> SectionMatchers;
+  llvm::DenseMap<diag::kind, const Matcher *> DiagToSection;
 };
 } // namespace
 
-std::unique_ptr<WarningsSpecialCaseList>
+llvm::Expected<WarningsSpecialCaseList>
 WarningsSpecialCaseList::create(const llvm::MemoryBuffer &Input,
-                                std::string &Err) {
-  auto WarningSuppressionList = std::make_unique<WarningsSpecialCaseList>();
-  if (!WarningSuppressionList->createInternal(&Input, Err))
-    return nullptr;
-  return WarningSuppressionList;
-}
-
-void WarningsSpecialCaseList::processSections(DiagnosticsEngine &Diags) {
-  // Drop the default section introduced by special case list, we only support
-  // exact diagnostic group names.
-  // FIXME: We should make this configurable in the parser instead.
-  Sections.erase("*");
-  // Make sure we iterate sections by their line numbers.
-  std::vector<std::pair<unsigned, const llvm::StringMapEntry<Section> *>>
-      LineAndSectionEntry;
-  LineAndSectionEntry.reserve(Sections.size());
-  for (const auto &Entry : Sections) {
-    StringRef DiagName = Entry.getKey();
-    // Each section has a matcher with that section's name, attached to that
-    // line.
-    const auto &DiagSectionMatcher = Entry.getValue().SectionMatcher;
-    unsigned DiagLine = DiagSectionMatcher->Globs.at(DiagName).second;
-    LineAndSectionEntry.emplace_back(DiagLine, &Entry);
+                                DiagnosticsEngine &Diags) {
+  auto ParsedInput = llvm::ParsedSpecialCaseList::parse(Input);
+  if (auto ParseErr = ParsedInput.takeError())
+    return ParseErr;
+  if (ParsedInput->UseRegexes)
+    return llvm::createStringError("regex patterns aren't supported");
+  WarningsSpecialCaseList Result;
+  Result.ParsedInput =
+      std::make_unique<llvm::ParsedSpecialCaseList>(*std::move(ParsedInput));
+  llvm::StringMap<std::size_t> SeenSections;
+  // First build up the matchers, as we want to store pointers into the vector
+  // afterwards.
+  for (const auto &Section : Result.ParsedInput->Sections) {
+    // Don't allow diagnostic groups to be mentioned multiple times.
+    if (auto [It, Inserted] =
+            SeenSections.try_emplace(Section.Name, Section.Line);
+        !Inserted) {
+      return llvm::createStringError(
+          llvm::formatv("already seen diagnostic group '{0}' on line '{1}'",
+                        Section.Name, It->getValue()));
+    }
+    Matcher &M = Result.SectionMatchers.emplace_back();
+    M.DiagGroup = Section.Name;
+    for (const auto &Entry : Section.Entries) {
+      if (Entry.Type != "src") {
+        return llvm::createStringError(llvm::formatv(
+            "only supports 'src' entry types, got '{0}'", Entry.Type));
+      }
+      auto ParsedPattern = llvm::GlobPattern::create(Entry.Pattern);
+      if (auto Err = ParsedPattern.takeError()) {
+        return createStringError(
+            llvm::formatv("malformed glob on line {0}: '{1}': {2}", Entry.Line,
+                          Entry.Pattern, llvm::fmt_consume(std::move(Err))));
+      }
+      M.Patterns.emplace_back(&Entry, *ParsedPattern);
+    }
   }
-  llvm::sort(LineAndSectionEntry);
+
+  // Now map individual diagnostics to matchers we've constructed.
   static constexpr auto WarningFlavor = clang::diag::Flavor::WarningOrError;
-  for (const auto &[_, SectionEntry] : LineAndSectionEntry) {
+  for (const Matcher &SectionMatcher : Result.SectionMatchers) {
     SmallVector<diag::kind> GroupDiags;
-    StringRef DiagGroup = SectionEntry->getKey();
+    StringRef DiagGroup = SectionMatcher.DiagGroup;
     if (Diags.getDiagnosticIDs()->getDiagnosticsInGroup(
             WarningFlavor, DiagGroup, GroupDiags)) {
       StringRef Suggestion =
@@ -553,62 +575,52 @@ void WarningsSpecialCaseList::processSections(DiagnosticsEngine &Diags) {
           << !Suggestion.empty() << Suggestion;
       continue;
     }
-    for (diag::kind Diag : GroupDiags)
+    for (diag::kind Diag : GroupDiags) {
       // We're intentionally overwriting any previous mappings here to make sure
       // latest one takes precedence.
-      DiagToSection[Diag] = &SectionEntry->getValue();
+      Result.DiagToSection[Diag] = &SectionMatcher;
+    }
   }
+  return Result;
 }
 
 void DiagnosticsEngine::setDiagSuppressionMapping(llvm::MemoryBuffer &Input) {
-  std::string Error;
-  auto WarningSuppressionList = WarningsSpecialCaseList::create(Input, Error);
-  if (!WarningSuppressionList) {
+  auto WarningSuppressionList = WarningsSpecialCaseList::create(Input, *this);
+  if (auto Err = WarningSuppressionList.takeError()) {
     // FIXME: Use a `%select` statement instead of printing `Error` as-is. This
     // should help localization.
     Report(diag::err_drv_malformed_warning_suppression_mapping)
-        << Input.getBufferIdentifier() << Error;
+        << Input.getBufferIdentifier() << llvm::toString(std::move(Err));
     return;
   }
-  WarningSuppressionList->processSections(*this);
   DiagSuppressionMapping =
-      [WarningSuppressionList(std::move(WarningSuppressionList))](
+      [WarningSuppressionList(std::move(*WarningSuppressionList))](
           diag::kind DiagId, StringRef Path) {
-        return WarningSuppressionList->isDiagSuppressed(DiagId, Path);
+        return WarningSuppressionList.isDiagSuppressed(DiagId, Path);
       };
 }
 
 bool WarningsSpecialCaseList::isDiagSuppressed(diag::kind DiagId,
                                                StringRef FilePath) const {
-  const Section *DiagSection = DiagToSection.lookup(DiagId);
+  const Matcher *DiagSection = DiagToSection.lookup(DiagId);
   if (!DiagSection)
     return false;
-  const SectionEntries &EntityTypeToCategories = DiagSection->Entries;
-  auto SrcEntriesIt = EntityTypeToCategories.find("src");
-  if (SrcEntriesIt == EntityTypeToCategories.end())
-    return false;
-  const llvm::StringMap<llvm::SpecialCaseList::Matcher> &CategoriesToMatchers =
-      SrcEntriesIt->getValue();
-  return globsMatches(CategoriesToMatchers, FilePath);
+  return DiagSection->matches(FilePath);
 }
 
-bool WarningsSpecialCaseList::globsMatches(
-    const llvm::StringMap<Matcher> &CategoriesToMatchers,
-    StringRef FilePath) const {
+bool WarningsSpecialCaseList::Matcher::matches(StringRef FilePath) const {
   StringRef LongestMatch;
   bool LongestIsPositive = false;
-  for (const auto &Entry : CategoriesToMatchers) {
-    StringRef Category = Entry.getKey();
-    const llvm::SpecialCaseList::Matcher &Matcher = Entry.getValue();
+  for (const auto &Entry : Patterns) {
+    StringRef EntryPattern = Entry.first->Pattern;
+    if (EntryPattern.size() < LongestMatch.size())
+      continue;
+    StringRef Category = Entry.first->Category;
     bool IsPositive = Category != "emit";
-    for (const auto &[Pattern, Glob] : Matcher.Globs) {
-      if (Pattern.size() < LongestMatch.size())
-        continue;
-      if (!Glob.first.match(FilePath))
-        continue;
-      LongestMatch = Pattern;
-      LongestIsPositive = IsPositive;
-    }
+    if (!Entry.second.match(FilePath))
+      continue;
+    LongestMatch = EntryPattern;
+    LongestIsPositive = IsPositive;
   }
   return LongestIsPositive;
 }

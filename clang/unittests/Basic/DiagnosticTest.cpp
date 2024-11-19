@@ -210,7 +210,11 @@ private:
 };
 
 MATCHER_P(WithMessage, Msg, "has diagnostic message") {
-  return arg.getMessage() == Msg;
+  if (arg.getMessage() != Msg) {
+    *result_listener << Msg;
+    return false;
+  }
+  return true;
 }
 MATCHER(IsError, "has error severity") {
   return arg.getLevel() == DiagnosticsEngine::Level::Error;
@@ -335,5 +339,50 @@ TEST_F(SuppressionMappingTest, IsIgnored) {
                     SM.getLocForStartOfFile(ClangID));
   EXPECT_FALSE(Diags.isIgnored(diag::warn_unused_function,
                                SM.getLocForStartOfFile(ClangID)));
+}
+
+TEST_F(SuppressionMappingTest, DisallowRegexes) {
+  llvm::StringLiteral SuppressionMappingFile = "#!special-case-list-v1\n";
+  Diags.getDiagnosticOptions().DiagnosticSuppressionMappingsFile = "foo.txt";
+  FS->addFile(
+      "foo.txt", /*ModificationTime=*/{},
+      llvm::MemoryBuffer::getMemBuffer(SuppressionMappingFile, "foo.txt"));
+  clang::ProcessWarningOptions(Diags, Diags.getDiagnosticOptions(), *FS);
+  EXPECT_THAT(diags(),
+              ElementsAre(WithMessage(
+                  "failed to process suppression mapping file 'foo.txt': "
+                  "regex patterns aren't supported")));
+}
+
+TEST_F(SuppressionMappingTest, DisallowSectionRedefinition) {
+  llvm::StringLiteral SuppressionMappingFile = R"(
+  [unused]
+  src:aux
+  [unused]
+  src:foo)";
+  Diags.getDiagnosticOptions().DiagnosticSuppressionMappingsFile = "foo.txt";
+  FS->addFile(
+      "foo.txt", /*ModificationTime=*/{},
+      llvm::MemoryBuffer::getMemBuffer(SuppressionMappingFile, "foo.txt"));
+  clang::ProcessWarningOptions(Diags, Diags.getDiagnosticOptions(), *FS);
+  EXPECT_THAT(diags(),
+              ElementsAre(WithMessage(
+                  "failed to process suppression mapping file 'foo.txt': "
+                  "already seen diagnostic group 'unused' on line '2'")));
+}
+
+TEST_F(SuppressionMappingTest, OnlyAcceptSrcTypedEntity) {
+  llvm::StringLiteral SuppressionMappingFile = R"(
+  [unused]
+  foo:foo)";
+  Diags.getDiagnosticOptions().DiagnosticSuppressionMappingsFile = "foo.txt";
+  FS->addFile(
+      "foo.txt", /*ModificationTime=*/{},
+      llvm::MemoryBuffer::getMemBuffer(SuppressionMappingFile, "foo.txt"));
+  clang::ProcessWarningOptions(Diags, Diags.getDiagnosticOptions(), *FS);
+  EXPECT_THAT(diags(),
+              ElementsAre(WithMessage(
+                  "failed to process suppression mapping file 'foo.txt': only "
+                  "supports 'src' entry types, got 'foo'")));
 }
 } // namespace
