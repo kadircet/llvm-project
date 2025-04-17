@@ -15,12 +15,15 @@
 #include "Compiler.h"
 #include "Config.h"
 #include "SymbolCollector.h"
+#include "clang-include-cleaner/Record.h"
+#include "index/FileIndex.h"
 #include "index/IndexAction.h"
 #include "support/Logger.h"
 #include "support/ThreadsafeFS.h"
 #include "support/Trace.h"
 #include "clang/Basic/LangOptions.h"
 #include "clang/Frontend/CompilerInvocation.h"
+#include "clang/Frontend/FrontendActions.h"
 #include "clang/Lex/PreprocessorOptions.h"
 #include "clang/Tooling/Inclusions/StandardLibrary.h"
 #include "llvm/ADT/IntrusiveRefCntPtr.h"
@@ -234,22 +237,26 @@ SymbolSlab indexStandardLibrary(llvm::StringRef HeaderSources,
   // We end up "blessing" such headers, and can only do that by indexing
   // everything first.
 
-  // Refs, relations, include graph in the stdlib mostly aren't useful.
-  auto Action = createStaticIndexingAction(
-      IndexOpts, [&](SymbolSlab S) { Symbols = std::move(S); }, nullptr,
-      nullptr, nullptr);
+  SyntaxOnlyAction Action;
 
-  if (!Action->BeginSourceFile(*Clang, Input)) {
+  if (!Action.BeginSourceFile(*Clang, Input)) {
     elog("Standard Library Index: BeginSourceFile() failed");
     return Symbols;
   }
 
-  if (llvm::Error Err = Action->Execute()) {
+  if (llvm::Error Err = Action.Execute()) {
     elog("Standard Library Index: Execute failed: {0}", std::move(Err));
     return Symbols;
   }
 
-  Action->EndSourceFile();
+  // We don't care about include graph for stdlib headers, so provide a no-op
+  // PI.
+  include_cleaner::PragmaIncludes PI;
+  auto Slabs = indexHeaderSymbols("", Clang->getASTContext(),
+                                  Clang->getPreprocessor(), PI);
+  Symbols = std::move(std::get<0>(Slabs));
+
+  Action.EndSourceFile();
 
   unsigned SymbolsBeforeFilter = Symbols.size();
   Symbols = filter(std::move(Symbols), Loc);
